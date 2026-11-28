@@ -46,8 +46,10 @@
   }
   .download:hover { transform: translateY(-2px); box-shadow: 0 10px 22px rgba(160, 87, 5, .32); }
   .note { font: 12px Arial, sans-serif; color: #9b7a4e; margin-top: 14px; }
-  .download-count { margin-top: 12px; font: 13px Arial, sans-serif; color: #80551f; }
-  .download-count strong { color: #a85b08; font-size: 16px; }
+  .progress-wrap { margin: 16px 4px 0; }
+  .progress-track { width: 100%; height: 10px; overflow: hidden; border-radius: 999px; background: #f0dfbf; }
+  .progress-bar { width: 0%; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #f5b52e, #d97706); transition: width .15s ease; }
+  .progress-label { margin-top: 6px; font: 12px Arial, sans-serif; color: #80551f; }
   .note.success {
     display: inline-block; padding: 10px 14px; border-radius: 10px;
     background: #e8f6e9; border: 1px solid #7fc58a;
@@ -63,64 +65,91 @@
       <span aria-hidden="true">⬇</span> <span id="buttonLabel">Download Video</span>
     </button>
     <div class="note" id="downloadStatus" role="status" aria-live="polite"></div>
-    <div class="download-count" aria-live="polite">Total downloads: <strong id="downloadCount">Loading…</strong></div>
+    <div class="progress-wrap" id="progressWrap" hidden aria-label="Download progress">
+      <div class="progress-track"><div class="progress-bar" id="progressBar"></div></div>
+      <div class="progress-label" id="progressLabel">0%</div>
+    </div>
   </main>
-<script async src="https://counterapi.com/counterapi.embed.js"></script>
 <script type="module">
   import { File } from 'https://unpkg.com/megajs/dist/main.browser-es.mjs';
+
+  // Set this after deploying the Google Apps Script Web App.
+  const GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyNZFtLZtr4jv39S83_Q1edWR1xxrJ-mimMVCbw3q7mkFKAfLBexmHn8rAJAdTB0uWR/exec';
+
+  // This ID must be unique for each video. Reuse the same ID for every page
+  // that points to this same video.
+  const VIDEO_NAME = 'Guru Nanak Dev Ji Video';
+  const VIDEO_ID = 'guru-nanak-dev-ji';
+  const MEGA_URL = 'https://mega.nz/file/YZ8F1LpR#fLNMgyAobus3pI_vd5Aly6Ej_d6n_k0Qv0awfiQnrrQ';
 
   const button = document.getElementById('downloadButton');
   const label = document.getElementById('buttonLabel');
   const status = document.getElementById('downloadStatus');
-  const countDisplay = document.getElementById('downloadCount');
-  const counterKey = 'gurpurab-video-downloads';
-  const counterAction = 'successful-download';
-  const counterNamespace = 'vishwasdoiphode007-hub.github.io';
-  const counterStartNumber = 4827;
+  const progressWrap = document.getElementById('progressWrap');
+  const progressBar = document.getElementById('progressBar');
+  const progressLabel = document.getElementById('progressLabel');
 
-  function updateDownloadCount(method) {
-    return new Promise((resolve, reject) => {
-      if (!window.counterApi || typeof window.counterApi[method] !== 'function') {
-        reject(new Error('Counter service is not available yet.'));
-        return;
-      }
-      window.counterApi[method](
-        counterKey,
-        counterAction,
-        counterNamespace,
-        { startNumber: counterStartNumber },
-        (error, result) => {
-          if (error) {
-            reject(error);
-            return;
-          }
-          if (result && typeof result.value !== 'undefined') {
-            countDisplay.textContent = Number(result.value).toLocaleString();
-          }
-          resolve(result);
-        }
-      );
-    });
+  function setProgress(percent) {
+    const safePercent = Math.max(0, Math.min(100, percent));
+    progressBar.style.width = `${safePercent}%`;
+    progressLabel.textContent = `${Math.round(safePercent)}%`;
   }
 
-  // Read the shared total when the page opens; the download action increments it.
-  updateDownloadCount('read').catch(() => {
-    countDisplay.textContent = 'Unavailable';
-  });
+  function recordSuccessfulDownload() {
+    if (GOOGLE_SCRIPT_URL.includes('PASTE_YOUR_')) {
+      console.warn('Google Apps Script URL has not been configured; download count was not recorded.');
+      return;
+    }
+
+    const url = new URL(GOOGLE_SCRIPT_URL);
+    url.searchParams.set('videoId', VIDEO_ID);
+    url.searchParams.set('videoName', VIDEO_NAME);
+    url.searchParams.set('action', 'increment');
+
+    // A simple GET avoids CORS preflight. The Apps Script endpoint records
+    // the count; the response is intentionally not displayed to visitors.
+    fetch(url.toString(), {
+      method: 'GET',
+      mode: 'no-cors',
+      cache: 'no-store',
+      keepalive: true
+    }).catch(error => console.warn('Could not send download count:', error));
+  }
+
+  function downloadMegaFile(file) {
+    return new Promise((resolve, reject) => {
+      const stream = file.download();
+      const chunks = [];
+
+      stream.on('progress', info => {
+        if (info.bytesTotal > 0) {
+          setProgress((info.bytesLoaded / info.bytesTotal) * 100);
+        }
+      });
+
+      stream.on('data', chunk => chunks.push(chunk));
+      stream.on('error', reject);
+      stream.on('end', () => resolve(new Blob(chunks, { type: 'video/mp4' })));
+    });
+  }
 
   button.addEventListener('click', async () => {
     button.disabled = true;
     status.classList.remove('success');
+    progressWrap.hidden = false;
+    setProgress(0);
     label.textContent = 'Preparing download…';
     status.textContent = 'Connecting to MEGA. Please keep this page open.';
 
     try {
-      const file = File.fromURL('https://mega.nz/file/YZ8F1LpR#fLNMgyAobus3pI_vd5Aly6Ej_d6n_k0Qv0awfiQnrrQ');
+      const file = File.fromURL(MEGA_URL);
       await file.loadAttributes();
+
       label.textContent = 'Downloading…';
-      status.textContent = 'Downloading your video. This may take a little while.';
-      const data = await file.downloadBuffer();
-      const blob = new Blob([data], { type: 'video/mp4' });
+      status.textContent = 'Downloading your video…';
+      const blob = await downloadMegaFile(file);
+
+      setProgress(100);
       const objectUrl = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = objectUrl;
@@ -129,20 +158,21 @@
       link.click();
       link.remove();
       setTimeout(() => URL.revokeObjectURL(objectUrl), 60000);
-      label.textContent = 'Download Video';
-      status.textContent = 'Download completed. Please check your download folder or gallery.';
+
+      status.textContent = 'Download prepared. Please check your downloads folder.';
       status.classList.add('success');
-      try {
-        await updateDownloadCount('increment');
-      } catch (counterError) {
-        console.warn('Download counter could not be updated:', counterError);
-        countDisplay.textContent = 'Temporarily unavailable';
-      }
+      label.textContent = 'Download Video';
+
+      // Count only after the MEGA stream finishes and the browser download
+      // has been triggered. Browsers cannot confirm that the user saved it.
+      recordSuccessfulDownload();
     } catch (error) {
       console.error(error);
       label.textContent = 'Try Download Again';
-      status.textContent = 'Direct download could not start. Please try again, or check that the MEGA link is publicly accessible.';
+      status.textContent = 'Download failed. Please try again, or check that the MEGA link is publicly accessible.';
       status.classList.remove('success');
+      progressWrap.hidden = true;
+      setProgress(0);
     } finally {
       button.disabled = false;
     }
